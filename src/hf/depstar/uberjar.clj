@@ -71,10 +71,16 @@
       (re-matches #"(?i)META-INF/.*\.(?:MF|SF|RSA|DSA)" filename)
       (re-matches #"(?i)META-INF/(?:INDEX\.LIST|DEPENDENCIES|NOTICE|LICENSE)(?:\.txt)?" filename)))
 
+(def clojure-extensions (list ".clj" ".cljc"))
+
+(defn- clojure-source?
+  [filename]
+  (some #(.endsWith filename %) clojure-extensions))
+
 (defn copy!
   ;; filename drives strategy
   [filename ^InputStream in ^Path target & [last-mod]]
-  (when-not (excluded? filename)
+  (when-not (or (excluded? filename) (clojure-source? filename))
     (if (Files/exists target (make-array LinkOption 0))
       (clash filename in target)
       (do
@@ -193,13 +199,27 @@
   (re-find #"depstar" p))
 
 (defn run
-  [{:keys [dest jar] :or {jar :uber} :as options}]
+  [{:keys [dest jar aot-list] :or {jar :uber} :as options}]
   (let [tmp (Files/createTempDirectory "uberjar" (make-array FileAttribute 0))
-        cp (into [] (remove depstar-itself?) (current-classpath))]
+        cp (into [] (remove depstar-itself?) (current-classpath))
+        target (path dest)]
     (run! #(copy-source % tmp options) cp)
+    (binding [*compile-path* (.toString tmp)]
+      (run! #(println "AOT Compile:" %) aot-list)
+      (run! (comp compile symbol) aot-list)
+      (compile 'clojure.tools.reader)
+      (compile 'clojure.tools.reader.reader-types)
+      (compile 'clojure.tools.reader.impl.utils)
+      (compile 'clojure.tools.reader.impl.errors)
+      (compile 'clojure.tools.reader.impl.inspect)
+      (compile 'clojure.tools.reader.impl.commons)
+      (compile 'clojure.tools.reader.default-data-readers)
+      (compile 'clojure.tools.reader.edn))
     (println "Writing" (name jar) "jar:" dest)
-    (write-jar tmp (path dest))))
+    (.mkdirs (.toFile (.getParent target)))
+    (write-jar tmp target)))
 
 (defn -main
-  [destination]
-  (run {:dest destination}))
+  [destination & aot-list]
+  (run {:dest destination
+        :aot-list aot-list}))
